@@ -1,4 +1,4 @@
-name: Deploy incremental via SFTP
+name: Deploy via SFTP
 
 on:
   push:
@@ -13,17 +13,14 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Deploy changed files via SFTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+      - name: Deploy to DreamHost via SFTP
+        uses: wlixcc/SFTP-Deploy-Action@v1.2.4
         with:
           server: iad1-shared-b7-28.dreamhost.com
           username: dh_qz8z3m
           password: ${{ secrets.SFTP_PASSWORD }}
-          protocol: sftp
-          local-dir: ./                # carpeta local
-          server-dir: filmsocialclub.io/
-          exclude: |
-            **/.git*
-            **/.github*
-            **/node_modules/**
-            **/.env
+          local_path: "./"
+          remote_path: "filmsocialclub.io/"
+          port: 22
+          sftp_only: true
+          delete: false     # evita borrar archivos en el servidor
