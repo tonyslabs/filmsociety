@@ -26,7 +26,7 @@ jobs:
           username: dh_qz8z3m
           password: ${{ secrets.SFTP_PASSWORD }}
           port: 22
-          local_path: "./deploy"
+          local_path: "./"
           remote_path: "filmsocialclub.io/"
           sftp_only: true
           delete_remote_files: false
