@@ -19,8 +19,8 @@ jobs:
           server: iad1-shared-b7-28.dreamhost.com
           username: dh_qz8z3m
           password: ${{ secrets.SFTP_PASSWORD }}
+          port: 22
           local_path: "./"
           remote_path: "filmsocialclub.io/"
-          port: 22
           sftp_only: true
-          delete: false     # evita borrar archivos en el servidor
+          delete_remote_files: false   # evita borrar archivos en el servidor
