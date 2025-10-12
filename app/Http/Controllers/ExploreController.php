@@ -14,81 +14,88 @@ class ExploreController extends Controller
         $this->stream = $stream;
     }
 
-    public function index(Request $request)
+    /** Selecciona catálogo correcto según filtros */
+    private function resolveCatalogId(?string $search, ?string $year, ?string $genre): string
     {
-        $type = $request->get('type'); // ❌ quitamos el default 'movie'
-        $genre = $request->get('genre');
-        $year = $request->get('year');
-        $search = $request->get('search');
-
-        // === Base: manifest ===
-        $manifest = $this->stream->manifest();
-
-        $genres = collect($manifest['catalogs'])
-            ->filter(fn($c) => $c['id'] === '713e3b0.top')
-            ->flatMap(fn($c) => collect($c['extra'])->where('name', 'genre')->pluck('options'))
-            ->flatten()
-            ->unique()
-            ->values();
-
-        $years = collect($manifest['catalogs'])
-            ->filter(fn($c) => $c['id'] === '713e3b0.year')
-            ->flatMap(fn($c) => collect($c['extra'])->where('name', 'genre')->pluck('options'))
-            ->flatten()
-            ->sortDesc()
-            ->values();
-
-        // === Resultados según filtros ===
-        if ($search) {
-            // 🔍 búsqueda directa
-            $results = $this->stream->catalog('movie', '713e3b0.top', ['search' => $search]);
-        } elseif ($year) {
-            $results = $this->stream->catalog('movie', '713e3b0.year', ['genre' => $year]);
-        } elseif ($genre) {
-            $results = $this->stream->catalog('movie', '713e3b0.top', ['genre' => $genre]);
-        } elseif (!$type) {
-            // 🎲 Aleatorio entre películas y series
-            $movies = $this->stream->catalog('movie', '713e3b0.top');
-            $shows = $this->stream->catalog('series', '713e3b0.top');
-
-            // mezclamos ambos resultados y los barajamos
-            $results = collect($movies)
-                ->merge($shows)
-                ->shuffle()
-                ->take(30)
-                ->values();
-        } else {
-            // 🔥 filtrado normal
-            $results = $this->stream->catalog($type, '713e3b0.top');
-        }
-
-        return view('explorer', compact('type', 'genre', 'year', 'search', 'genres', 'years', 'results'));
+        if ($search)
+            return '713e3b0.search';
+        if ($year)
+            return '713e3b0.year';
+        return '713e3b0.top'; // género y default
     }
 
+    /** Construye extras compatibles con el addon */
+    private function buildExtras(?string $search, ?string $year, ?string $genre, int $skip = 0, int $limit = 30): array
+    {
+        $extras = ['skip' => $skip, 'limit' => $limit];
+
+        if ($search) {
+            $extras['search'] = $search;
+        } else {
+            if ($year)
+                $extras['genre'] = $year;   // en AIOStreams, el catálogo "year" usa genre=YYYY
+            if ($genre)
+                $extras['genre'] = $genre;  // top por género
+        }
+
+        return $extras;
+    }
+
+    public function index(Request $request)
+    {
+        $type = $request->string('type')->toString() ?: 'movie';
+        $genre = $request->string('genre')->toString() ?: null;
+        $year = $request->string('year')->toString() ?: null;
+        $search = trim($request->string('search')->toString() ?? '');
+
+        // Manifest para poblar selects (fallbacks si viniera vacío)
+        $manifest = $this->stream->manifest() ?: [];
+        $catList = collect($manifest['catalogs'] ?? []);
+
+        $genres = $catList
+            ->filter(fn($c) => ($c['id'] ?? '') === '713e3b0.top')
+            ->flatMap(fn($c) => collect($c['extra'] ?? [])->where('name', 'genre')->pluck('options'))
+            ->flatten()->unique()->filter()->values();
+
+        if ($genres->isEmpty()) {
+            $genres = collect(['Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Drama', 'Fantasy', 'Horror', 'Romance', 'Sci-Fi', 'Thriller']);
+        }
+
+        $years = $catList
+            ->filter(fn($c) => ($c['id'] ?? '') === '713e3b0.year')
+            ->flatMap(fn($c) => collect($c['extra'] ?? [])->where('name', 'genre')->pluck('options'))
+            ->flatten()->unique()->sortDesc()->values();
+
+        if ($years->isEmpty()) {
+            $years = collect(range((int) date('Y'), 1990));
+        }
+
+        // Catálogo y extras correctos
+        $catalogId = $this->resolveCatalogId($search ?: null, $year, $genre);
+        $extras = $this->buildExtras($search ?: null, $year, $genre, skip: 0, limit: 30);
+
+        $results = $this->stream->catalog($type, $catalogId, $extras, 30);
+
+        return view('explorer', compact('type', 'genre', 'year', 'search', 'genres', 'years', 'results', 'catalogId'));
+    }
 
     public function loadMore(Request $request)
     {
-        $type = $request->get('type');
+        $type = $request->string('type')->toString() ?: 'movie';
+        $genre = $request->string('genre')->toString() ?: null;
+        $year = $request->string('year')->toString() ?: null;
+        $search = trim($request->string('search')->toString() ?? '');
         $skip = (int) $request->get('skip', 0);
-        $genre = $request->get('genre');
-        $year = $request->get('year');
 
-        if (!$type) {
-            // Si no se define, mezcla ambos tipos
-            $movies = $this->stream->catalog('movie', '713e3b0.top', ['skip' => $skip]);
-            $shows = $this->stream->catalog('series', '713e3b0.top', ['skip' => $skip]);
-            $results = collect($movies)->merge($shows)->shuffle()->take(30)->values();
-        } else {
-            $extras = ['skip' => $skip];
-            if ($genre)
-                $extras['genre'] = $genre;
-            if ($year)
-                $extras['genre'] = $year;
+        $catalogId = $this->resolveCatalogId($search ?: null, $year, $genre);
+        $extras = $this->buildExtras($search ?: null, $year, $genre, skip: $skip, limit: 30);
 
-            $results = $this->stream->catalog($type, '713e3b0.top', $extras, 30);
-        }
+        $items = $this->stream->catalog($type, $catalogId, $extras, 30);
 
-        return response()->json(['items' => $results]);
+        // Dedup defensivo por id
+        $items = collect($items)->unique('id')->values()->toArray();
+
+        return response()->json(['items' => $items]);
     }
 
     public function peliculas(Request $request)
@@ -102,6 +109,4 @@ class ExploreController extends Controller
         $request->merge(['type' => 'series']);
         return $this->index($request);
     }
-
-
 }

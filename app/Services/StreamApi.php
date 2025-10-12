@@ -15,64 +15,54 @@ class StreamApi
         $this->base = rtrim(config('stream.base'), '/');
     }
 
-    /**
-     * Peticiones HTTP con cache, retry y headers optimizados
-     */
+    /** Compat: varias instancias de Stremio/AIO leen "extra" como JSON en query */
+    private function withExtraCompat(array $extras): array
+    {
+        if (empty($extras))
+            return [];
+        // mantenemos ambos formatos: plano y empaquetado en extra
+        return $extras + ['extra' => json_encode($extras, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)];
+    }
+
     private function fetch(string $key, string $path, array $params = [], int $ttl = 900): ?array
     {
         return Cache::remember($key, $ttl, function () use ($path, $params) {
             try {
                 $url = "{$this->base}{$path}";
-
-                $response = Http::timeout(15)
+                $response = Http::timeout(20)
                     ->retry(2, 500)
                     ->withHeaders([
-                        'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+                        'User-Agent' => 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Safari/537.36',
                         'Accept' => 'application/json',
                         'Referer' => 'https://strem.io',
                     ])
                     ->get($url, $params);
 
-                if ($response->successful()) {
+                if ($response->successful())
                     return $response->json();
-                }
 
-                Log::warning("⚠️ StreamApi fallo", [
+                Log::warning('StreamApi fetch fail', [
                     'url' => $url,
+                    'params' => $params,
                     'status' => $response->status(),
                     'body' => $response->body(),
                 ]);
-
                 return null;
             } catch (\Throwable $e) {
-                Log::error("❌ StreamApi error en {$path}: " . $e->getMessage());
+                Log::error("StreamApi exception {$path}: {$e->getMessage()}");
                 return null;
             }
         });
     }
 
-    /**
-     * Validación segura de URLs de imágenes
-     */
     private function safeImage(?string $url): string
     {
-        if (empty($url)) {
+        if (empty($url) || !str_starts_with($url, 'http'))
             return asset('img/no-poster.png');
-        }
-
-        if (!str_starts_with($url, 'http')) {
-            return asset('img/no-poster.png');
-        }
-
-        // Permitir dominios legítimos del ecosistema Stremio / AIOStreams
-        if (preg_match('/(tmdb\.org|imdb\.com|metahub\.space|aiostreamsfortheweak\.nhyira\.dev|aiostreams\.viren070\.com)/i', $url)) {
+        if (preg_match('/(tmdb\.org|imdb\.com|metahub\.space|aiostreams[^\/]*\.)/i', $url))
             return $url;
-        }
-
         return asset('img/no-poster.png');
     }
-
-    // === Métodos públicos ===================================================
 
     public function manifest(): ?array
     {
@@ -81,25 +71,26 @@ class StreamApi
 
     public function catalog(string $type, string $id, array $extras = [], int $limit = 30): array
     {
-        $key = "catalog_{$type}_{$id}_" . md5(json_encode($extras));
-        $data = $this->fetch($key, "/catalog/{$type}/{$id}.json", $extras);
+        $params = $this->withExtraCompat($extras);
+        $key = "catalog_{$type}_{$id}_" . md5(json_encode($params));
+        $data = $this->fetch($key, "/catalog/{$type}/{$id}.json", $params);
 
         if (!$data || empty($data['metas'])) {
-            Log::notice("📭 Catálogo vacío para {$type}/{$id}", ['extras' => $extras]);
+            Log::notice("Catálogo vacío {$type}/{$id}", ['extras' => $params]);
             return [];
         }
 
         return collect($data['metas'])
             ->map(fn($item) => [
-                'id'          => $item['id'] ?? '',
-                'type'        => $item['type'] ?? $type,
-                'name'        => $item['name'] ?? 'Sin título',
+                'id' => $item['id'] ?? '',
+                'type' => $item['type'] ?? $type,
+                'name' => $item['name'] ?? 'Sin título',
                 'description' => $item['description'] ?? '',
-                'poster'      => $this->safeImage($item['poster'] ?? null),
-                'background'  => $this->safeImage($item['background'] ?? ($item['poster'] ?? null)),
-                'logo'        => $this->safeImage($item['logo'] ?? null),
-                'rating'      => $item['imdbRating'] ?? null,
-                'year'        => $item['releaseInfo'] ?? null,
+                'poster' => $this->safeImage($item['poster'] ?? null),
+                'background' => $this->safeImage($item['background'] ?? ($item['poster'] ?? null)),
+                'logo' => $this->safeImage($item['logo'] ?? null),
+                'rating' => $item['imdbRating'] ?? null,
+                'year' => $item['releaseInfo'] ?? null,
             ])
             ->filter(fn($i) => !str_contains($i['poster'], 'no-poster.png'))
             ->take($limit)
@@ -122,20 +113,15 @@ class StreamApi
         return $this->fetch("subs_{$type}_{$id}", "/subtitles/{$type}/{$id}.json", [], 1800) ?? [];
     }
 
-    // === Catálogos personalizados ===========================================
-
-    /** 🔥 Películas y series del año actual */
     public function getNewReleases(?string $year = null): array
     {
         $year = $year ?? date('Y');
-
         return [
             'movies' => $this->catalog('movie', '713e3b0.year', ['genre' => $year], 40),
             'series' => $this->catalog('series', '713e3b0.year', ['genre' => $year], 40),
         ];
     }
 
-    /** ⭐ Populares (Top) */
     public function getPopular(): array
     {
         return [
@@ -144,7 +130,6 @@ class StreamApi
         ];
     }
 
-    /** 🎬 Destacados por género */
     public function getFeatured(string $genre = 'Action'): array
     {
         return [
