@@ -1,4 +1,4 @@
-name: Deploy via SFTP (clean build)
+name: Deploy on main merge
 
 on:
   push:
@@ -10,14 +10,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare deploy folder
+      # Filtra archivos antes de subir
+      - name: Clean project for deploy
         run: |
-          mkdir deploy
-          rsync -av --exclude='.git*' --exclude='.github*' --exclude='node_modules' \
-            --exclude='vendor' --exclude='storage' --exclude='.env' ./ ./
+          rm -rf .git .github node_modules vendor storage .env || true
 
       - name: Deploy to DreamHost via SFTP
         uses: wlixcc/SFTP-Deploy-Action@v1.2.4
@@ -27,6 +26,6 @@ jobs:
           password: ${{ secrets.SFTP_PASSWORD }}
           port: 22
           local_path: "./"
-          remote_path: "filmsocialclub.io/"
+          remote_path: "/home/dh_qz8z3m/filmsocialclub.io/"
           sftp_only: true
           delete_remote_files: false
