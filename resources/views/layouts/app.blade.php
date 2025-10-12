@@ -28,7 +28,7 @@
             <div class="flex items-center space-x-2">
 
                 <span class="text-xl font-semibold tracking-tight text-indigo-300">
-                    Film<span class="text-purple-400">Societyyyyy
+                    Film<span class="text-purple-400">Society
                 </span>
             </div>
 
