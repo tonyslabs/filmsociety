@@ -3,7 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Services\StreamApi;
-use Illuminate\Support\Collection;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class HomeController extends Controller
 {
@@ -14,90 +15,72 @@ class HomeController extends Controller
         $this->stream = $stream;
     }
 
-    public function index()
+    public function index(Request $request)
     {
-        // === 1️⃣ MANIFEST =====================================================
-        $manifest = $this->stream->manifest();
+        $year = now()->year;
 
-        // === 2️⃣ CATALOGOS PRINCIPALES =======================================
-        $year = '2025'; // 🔥 Año fijo (puede ser dinámico)
-        $newReleases = $this->stream->getNewReleases($year);
-        $popular = $this->stream->getPopular();
+        try {
+            // Carga mínima y robusta
+            $newReleases = $this->stream->getNewReleases($year);
+            $popular     = $this->stream->getPopular();
+        } catch (\Throwable $e) {
+            Log::error('Home load error', ['err' => $e->getMessage()]);
+            return view('home', ['banners' => [], 'catalogs' => []]);
+        }
 
-        // 🔹 Helper: Generar URL rpdb (misma que usa el carrusel del addon)
+        // RPDB helper
         $rpdb = fn($id, $type) =>
             "https://aiostreamsfortheweak.nhyira.dev/api/v1/rpdb?id={$id}&type={$type}"
             . "&fallback=" . rawurlencode("https://images.metahub.space/poster/small/{$id}/img")
             . "&apiKey=t0-free-rpdb";
 
-        // === 3️⃣ HERO CAROUSEL ===============================================
+        // Hero: mezcla estrenos y populares, sin duplicados
         $banners = collect(array_merge(
             $newReleases['movies'] ?? [],
-            $newReleases['series'] ?? []
+            $newReleases['series'] ?? [],
+            $popular['movies'] ?? [],
+            $popular['series'] ?? []
         ))
+            ->unique('id')
             ->shuffle()
             ->take(6)
             ->map(fn($item) => [
                 'id'          => $item['id'],
                 'type'        => $item['type'],
-                'name'        => $item['name'],
-                'description' => $item['description'],
+                'name'        => $item['name'] ?? '',
+                'description' => $item['description'] ?? '',
                 'poster'      => $rpdb($item['id'], $item['type']),
                 'background'  => $rpdb($item['id'], $item['type']),
-                'logo'        => $item['logo'] ?? null,
+                'trailer'     => $item['trailers'][0]['source'] ?? '',
             ])
             ->values();
 
-        // === 4️⃣ TOP SERIES Y PELÍCULAS ======================================
-        $seriesTop = collect($popular['series'])
-            ->take(30)
-            ->map(fn($item) => [
-                ...$item,
-                'poster' => $rpdb($item['id'], $item['type']),
-                'background' => $rpdb($item['id'], $item['type']),
-            ])
-            ->values();
+        // Catálogos
+        $seriesTop = collect($popular['series'] ?? [])->unique('id')->take(24)->map(fn($i) => [
+            ...$i, 'poster' => $rpdb($i['id'], $i['type']), 'background' => $rpdb($i['id'], $i['type']),
+        ]);
 
-        $moviesTop = collect($popular['movies'])
-            ->take(30)
-            ->map(fn($item) => [
-                ...$item,
-                'poster' => $rpdb($item['id'], $item['type']),
-                'background' => $rpdb($item['id'], $item['type']),
-            ])
-            ->values();
+        $moviesTop = collect($popular['movies'] ?? [])->unique('id')->take(24)->map(fn($i) => [
+            ...$i, 'poster' => $rpdb($i['id'], $i['type']), 'background' => $rpdb($i['id'], $i['type']),
+        ]);
 
-        // === 5️⃣ ESTRRENOS (pelis + series) ==================================
         $estrenos = collect(array_merge(
             $newReleases['movies'] ?? [],
             $newReleases['series'] ?? []
         ))
+            ->unique('id')
             ->shuffle()
             ->take(20)
-            ->map(fn($item) => [
-                ...$item,
-                'poster' => $rpdb($item['id'], $item['type']),
-                'background' => $rpdb($item['id'], $item['type']),
-            ])
-            ->values();
+            ->map(fn($i) => [
+                ...$i, 'poster' => $rpdb($i['id'], $i['type']), 'background' => $rpdb($i['id'], $i['type']),
+            ]);
 
-        // === 6️⃣ ESTRUCTURA DE CATÁLOGOS =====================================
         $catalogs = [
-            [
-                'meta' => ['name' => 'Top Series', 'type' => 'series'],
-                'items' => $seriesTop,
-            ],
-            [
-                'meta' => ['name' => 'Top Películas', 'type' => 'movie'],
-                'items' => $moviesTop,
-            ],
-            [
-                'meta' => ['name' => "Estrenos {$year}", 'type' => 'mixed'],
-                'items' => $estrenos,
-            ],
+            ['meta' => ['name' => 'Top Series',     'type' => 'series'], 'items' => $seriesTop],
+            ['meta' => ['name' => 'Top Películas',  'type' => 'movie' ], 'items' => $moviesTop],
+            ['meta' => ['name' => "Estrenos $year", 'type' => 'mixed' ], 'items' => $estrenos],
         ];
 
-        // === 7️⃣ ENVIAR DATOS A LA VISTA =====================================
         return view('home', compact('banners', 'catalogs'));
     }
 }

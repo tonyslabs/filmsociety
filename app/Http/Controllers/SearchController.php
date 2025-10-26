@@ -2,16 +2,16 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Support\Facades\Http;
+use App\Services\StreamApi;
 use Illuminate\Http\Request;
 
 class SearchController extends Controller
 {
-    private string $base;
+    protected StreamApi $stream;
 
-    public function __construct()
+    public function __construct(StreamApi $stream)
     {
-        $this->base = rtrim(config('stremio.base'), '/');
+        $this->stream = $stream;
     }
 
     public function index(Request $request)
@@ -22,28 +22,15 @@ class SearchController extends Controller
             return view('search', ['query' => '', 'results' => collect()]);
         }
 
-        // Catalogos de búsqueda (películas y series)
-        $catalogs = [
-            ['type' => 'movie', 'id' => 'e5ce3b0.top'],
-            ['type' => 'series', 'id' => 'e5ce3b0.top'],
-        ];
+        // Usar catálogos de búsqueda consistentes con el addon
+        $catalogId = '713e3b0.search';
 
-        $results = collect();
+        $movies = $this->stream->catalog('movie', $catalogId, ['search' => $query], 60);
+        $series = $this->stream->catalog('series', $catalogId, ['search' => $query], 60);
 
-        foreach ($catalogs as $cat) {
-            $url = "{$this->base}/catalog/{$cat['type']}/{$cat['id']}.json";
-            $response = Http::get($url, [
-                'extra' => json_encode(['search' => $query]),
-            ]);
-
-            if ($response->ok()) {
-                $data = $response->json();
-                $results = $results->merge($data['metas'] ?? []);
-            }
-        }
-
-        // Evitar duplicados por ID
-        $results = $results->unique('id')->values();
+        $results = collect(array_merge($movies, $series))
+            ->unique('id')
+            ->values();
 
         return view('search', compact('query', 'results'));
     }
