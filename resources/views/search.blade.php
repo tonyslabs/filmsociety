@@ -14,7 +14,7 @@
   @else
     <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6">
       @foreach($results as $item)
-        <a href="{{ route('title', ['type' => $item['type'], 'id' => $item['id']]) }}"
+        <a href="{{ route('watch', ['type' => $item['type'], 'id' => $item['id']]) }}"
            class="block rounded-xl overflow-hidden bg-[#20243b]/70 border border-indigo-900/30 
                   shadow-md hover:shadow-indigo-700/40 transform hover:scale-105 transition">
 

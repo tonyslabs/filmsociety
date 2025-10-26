@@ -172,33 +172,14 @@
                             <div class="preview-item block relative rounded-xl overflow-hidden bg-[#20243b]/70 
                                                             border border-indigo-900/30 shadow-md transform transition-all duration-300 
                                                             group-hover:scale-105 cursor-pointer"
+                                onclick="try{const d=JSON.parse(this.dataset.preview);window.dispatchEvent(new CustomEvent('open-preview',{detail:d}));}catch(e){}"
                                 data-preview='@json($previewData)'>
                                 <div class="aspect-[2/3] w-full overflow-hidden rounded-xl relative">
                                     <img src="{{ $item['poster'] ?? asset('img/no-poster.png') }}" loading="lazy"
                                         class="w-full h-full object-cover transition duration-700 ease-in-out"
                                         alt="{{ $item['name'] ?? '' }}">
 
-                                    {{-- 🎬 Acciones flotantes --}}
-                                    <div
-                                        class="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition">
-                                        <button
-                                            class="p-1.5 bg-black/50 rounded-full hover:bg-black/70 text-gray-200 hover:text-white">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                                                stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                    d="M5 13l4 4L19 7" />
-                                            </svg>
-                                        </button>
-                                        <button
-                                            class="p-1.5 bg-black/50 rounded-full hover:bg-black/70 text-gray-200 hover:text-white"
-                                            @click="window.dispatchEvent(new CustomEvent('open-preview', {detail: {{ Js::from($previewData) }}}))">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24"
-                                                stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                    d="M14.752 11.168l-6.518-3.759A1 1 0 007 8.24v7.52a1 1 0 001.234.97l6.518-3.76a1 1 0 000-1.74z" />
-                                            </svg>
-                                        </button>
-                                    </div>
+                                    {{-- (UI simplificada) Botones overlay removidos para que toda la tarjeta abra el preview --}}
                                 </div>
                             </div>
                         </div>

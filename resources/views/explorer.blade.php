@@ -50,7 +50,8 @@
             @foreach($results as $item)
                 <div class="group relative rounded-xl overflow-hidden bg-[#20243b]/70 border border-indigo-900/30 
                                 shadow-md shadow-indigo-900/30 transform transition duration-300 hover:scale-105 cursor-pointer"
-                    @click="openPreview({!! json_encode($item) !!})">
+                    data-preview='@json($item)'
+                    onclick="try{const d=JSON.parse(this.dataset.preview);window.dispatchEvent(new CustomEvent('open-preview',{detail:d}));}catch(e){}">
                     <div class="aspect-[2/3] w-full overflow-hidden rounded-xl">
                         <img src="{{ $item['poster'] ?? asset('img/no-poster.png') }}" loading="lazy"
                             class="w-full h-full object-cover transition duration-700 ease-in-out"

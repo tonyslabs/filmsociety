@@ -29,12 +29,13 @@ class WatchController extends Controller
         $streams = [];
 
         try {
-            $metaResponse = Http::timeout(20)->get("$base/catalog/$type/713e3b0.top.json");
+            // Recuperar metadata precisa del item
+            $metaResponse = Http::timeout(20)->get("$base/meta/$type/$id.json");
             if ($metaResponse->successful()) {
-                $data = $metaResponse->json();
-                $meta = collect($data['metas'] ?? [])->firstWhere('id', $id) ?? [];
+                $meta = $metaResponse->json('meta', []);
             }
 
+            // Recuperar streams disponibles
             $streamResponse = Http::timeout(30)->get("$base/stream/$type/$id.json");
             if ($streamResponse->successful()) {
                 $streams = collect($streamResponse->json('streams', []))
@@ -67,6 +68,8 @@ class WatchController extends Controller
     {
         $base = rtrim(config('stream.base'), '/');
         $torrServer = env('TORRSERVER_URL', 'http://127.0.0.1:8090');
+        $alldebridKey = env('ALLDEBRID_KEY');
+        $alldebridAgent = env('ALLDEBRID_AGENT', 'filmsociety');
 
         $res = Http::timeout(25)->get("$base/stream/$type/$id.json");
         $streams = $res->successful() ? $res->json('streams', []) : [];
@@ -84,54 +87,102 @@ class WatchController extends Controller
         $playUrl = '';
 
         try {
-            // 1) P2P con infoHash → TorrServer si el archivo parece reproducible en navegador
+            // 1) P2P con infoHash → intentar AllDebrid (sin servicios externos locales)
             if ($infoHash) {
-                $preferTS = $this->looksBrowserPlayable($name, $desc);
-                $ping = Http::timeout(2)->get("$torrServer/echo");
-                if ($preferTS && $ping->successful()) {
-                    // Registra magnet (best-effort) y elige archivo
-                    $fileIndex = 0;
+                $magnetRaw = 'magnet:?xt=urn:btih:' . $infoHash;
+
+                if (!empty($alldebridKey)) {
                     try {
-                        $reg = Http::timeout(15)->get("$torrServer/torrents/add", [
-                            'link' => "magnet:?xt=urn:btih:$infoHash",
+                        // Subir magnet
+                        $upload = Http::timeout(15)->get('https://api.alldebrid.com/v4/magnet/upload', [
+                            'agent' => $alldebridAgent,
+                            'apikey' => $alldebridKey,
+                            'magnets[]' => $magnetRaw,
                         ]);
-                        if ($reg->successful()) {
-                            $tor = $reg->json('torrent') ?? [];
-                            $files = $tor['files'] ?? [];
-                            if ($files) {
-                                // Escoge el más grande con extensión reproducible
-                                $valid = array_values(array_filter(
-                                    $files,
-                                    fn($f) =>
-                                    isset($f['path']) && preg_match('/\.(mp4)$/i', $f['path'])
-                                ));
-                                if ($valid) {
-                                    usort($valid, fn($a, $b) => ($b['length'] ?? 0) <=> ($a['length'] ?? 0));
-                                    $fileIndex = $valid[0]['id'] ?? 0;
-                                } else {
-                                    // si no hay mp4, forzar fallback a Webtor
-                                    $fileIndex = null;
+                        $mid = null;
+                        if ($upload->successful()) {
+                            $uj = $upload->json();
+                            $magArr = $uj['data']['magnets'] ?? null;
+                            if (is_array($magArr) && !empty($magArr[0]['id'])) {
+                                $mid = $magArr[0]['id'];
+                            }
+                        }
+
+                        // Poll de estado y obtención de links
+                        $links = [];
+                        if ($mid) {
+                            for ($i = 0; $i < 6; $i++) { // ~12s total
+                                usleep(2000 * 1000);
+                                $st = Http::timeout(12)->get('https://api.alldebrid.com/v4/magnet/status', [
+                                    'agent' => $alldebridAgent,
+                                    'apikey' => $alldebridKey,
+                                    'id' => $mid,
+                                ]);
+                                if (!$st->successful()) continue;
+                                $sj = $st->json();
+                                $m = $sj['data']['magnets'][0] ?? ($sj['data']['magnet'] ?? null);
+                                if (!$m) continue;
+                                $ready = ($m['status'] ?? '') === 'Ready' || ($m['ready'] ?? false) === true || !empty($m['links']);
+                                if ($ready) {
+                                    $links = $m['links'] ?? [];
+                                    break;
                                 }
                             }
                         }
+
+                        // Desbloquear y elegir mejor enlace (mp4 si es posible)
+                        $unlocked = null;
+                        foreach ($links as $lnk) {
+                            $link = is_array($lnk) ? ($lnk['link'] ?? ($lnk['download'] ?? '')) : (string) $lnk;
+                            if (!$link) continue;
+                            $unlock = Http::timeout(12)->get('https://api.alldebrid.com/v4/link/unlock', [
+                                'agent' => $alldebridAgent,
+                                'apikey' => $alldebridKey,
+                                'link' => $link,
+                            ]);
+                            if ($unlock->successful()) {
+                                $uj = $unlock->json();
+                                $direct = $uj['data']['link'] ?? null;
+                                if ($direct) {
+                                    $unlocked = $direct;
+                                    // Preferir mp4 si el path lo sugiere
+                                    if (str_ends_with(strtolower(parse_url($direct, PHP_URL_PATH) ?? ''), '.mp4')) {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if ($unlocked) {
+                            $playUrl = url('/proxy/stream?url=' . urlencode($unlocked));
+                            $isEmbed = false;
+                            $step = 'alldebrid_direct';
+                        }
                     } catch (\Throwable $e) {
-                        Log::warning('TS register fail', ['err' => $e->getMessage()]);
+                        Log::warning('AllDebrid error', ['err' => $e->getMessage()]);
+                    }
+                }
+
+                // Si AllDebrid no dio URL directa, intentar WebTorrent en el cliente y fallback a Webtor
+                if (empty($playUrl)) {
+                    $trackers = [
+                        'wss://tracker.openwebtorrent.com',
+                        'wss://tracker.btorrent.xyz',
+                        'wss://tracker.fastcast.nz',
+                        'wss://tracker.webtorrent.dev'
+                    ];
+                    $magnet = $magnetRaw;
+                    foreach ($trackers as $tr) {
+                        $magnet .= '&tr=' . urlencode($tr);
                     }
 
-                    if ($fileIndex !== null) {
-                        $tsUrl = "$torrServer/stream/file?index=$fileIndex&play=true";
-                        $playUrl = url('/proxy/stream?url=' . urlencode($tsUrl));
-                        $isEmbed = false;
-                        $step = "torrserver_file_stream_index_$fileIndex";
-                    } else {
-                        $playUrl = "https://webtor.io/embed?magnet=" . urlencode("magnet:?xt=urn:btih:$infoHash");
-                        $isEmbed = true;
-                        $step = 'fallback_webtor_non_mp4';
-                    }
-                } else {
-                    $playUrl = "https://webtor.io/embed?magnet=" . urlencode("magnet:?xt=urn:btih:$infoHash");
-                    $isEmbed = true;
-                    $step = $preferTS ? 'torrserver_unreachable' : 'fallback_webtor_codec';
+                    $playUrl = '';
+                    $isEmbed = false; // renderizamos <video> y dejamos que el cliente WebTorrent adjunte el stream
+                    $step = isset($step) && $step === 'alldebrid_direct' ? $step : 'webtorrent_client';
+
+                    // Añadir datos al array de salida para el frontend
+                    $stream['webtorrent_magnet'] = $magnet;
+                    $stream['fallback_embed'] = "https://webtor.io/embed?magnet=" . urlencode($magnetRaw);
                 }
             }
             // 2) Debrid: evita AllDebrid unlock de strem.fun (no soportado). Fallback embed.
@@ -140,18 +191,11 @@ class WatchController extends Controller
                 $isEmbed = true;
                 $step = 'debrid_fallback_webtor';
             }
-            // 3) HTTP directo
+            // 3) HTTP directo → reproducir siempre en <video>; HLS se maneja en el frontend
             elseif (Str::startsWith($originalUrl, 'http')) {
-                // Solo proxiar directo si parece H.264/AAC
-                if ($this->looksBrowserPlayable($name, $desc) || Str::endsWith($originalUrl, '.mp4')) {
-                    $playUrl = url('/proxy/stream?url=' . urlencode($originalUrl));
-                    $isEmbed = false;
-                    $step = 'direct_http';
-                } else {
-                    $playUrl = "https://webtor.io/embed?url=" . urlencode($originalUrl);
-                    $isEmbed = true;
-                    $step = 'direct_http_fallback_webtor';
-                }
+                $playUrl = url('/proxy/stream?url=' . urlencode($originalUrl));
+                $isEmbed = false;
+                $step = 'direct_http';
             } else {
                 abort(400, 'Fuente no soportada');
             }
@@ -180,6 +224,43 @@ class WatchController extends Controller
         return view('watch-player', compact('stream', 'type', 'id'));
     }
 
+    private function isAllowedProxyUrl(string $url): bool
+    {
+        $parsed = parse_url($url);
+        if (!$parsed || empty($parsed['scheme']) || empty($parsed['host'])) {
+            return false;
+        }
+
+        $scheme = strtolower($parsed['scheme']);
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            return false;
+        }
+
+        $ts = parse_url(env('TORRSERVER_URL', 'http://127.0.0.1:8090')) ?: [];
+        $tsHost = $ts['host'] ?? null;
+        $host = $parsed['host'];
+
+        // Permitir siempre el host configurado de TorrServer
+        if ($tsHost && strcasecmp($host, $tsHost) === 0) {
+            return true;
+        }
+
+        // Bloquear explícitamente localhost y dominios .local
+        if (in_array(strtolower($host), ['localhost', '127.0.0.1'], true) || str_ends_with(strtolower($host), '.local')) {
+            return false;
+        }
+
+        // Si es IP literal, bloquear rangos privados/reservados
+        if (filter_var($host, FILTER_VALIDATE_IP)) {
+            if (!filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return false;
+            }
+        }
+
+        // Hosts públicos permitidos por defecto (listas dinámicas se pueden añadir aquí)
+        return true;
+    }
+
     public function proxy(Request $request)
     {
         $url = $request->query('url');
@@ -188,11 +269,17 @@ class WatchController extends Controller
 
         $range = $request->header('Range', '');
 
+        // Validaciones básicas para mitigar SSRF
+        if (!$this->isAllowedProxyUrl($url)) {
+            return response('URL no permitida', 400);
+        }
+
         try {
             $client = Http::withOptions([
                 'stream' => true,
-                'verify' => false,
+                // Mantener timeout 0 para streaming continuo
                 'timeout' => 0,
+                'verify' => filter_var(env('STREAM_PROXY_VERIFY', true), FILTER_VALIDATE_BOOLEAN),
             ])->withHeaders(array_filter([
                             'User-Agent' => 'FreeWatchProxy/2.0',
                             'Range' => $range ?: 'bytes=0-', // favorece 206 en TS
@@ -222,7 +309,6 @@ class WatchController extends Controller
             if (!isset($forward['Content-Type']))
                 $forward['Content-Type'] = $headers['content-type'][0] ?? 'application/octet-stream';
 
-            $forward['Access-Control-Allow-Origin'] = '*';
             $forward['X-Proxy-Upstream-Status'] = (string) $status;
 
             Log::info('PROXY_UPSTREAM', [
